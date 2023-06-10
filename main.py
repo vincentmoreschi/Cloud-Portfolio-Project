@@ -25,11 +25,11 @@ from flask import url_for
 from authlib.integrations.flask_client import OAuth
 from six.moves.urllib.parse import urlencode
 import key
-
+import constants
 app = Flask(__name__)
 client = datastore.Client()
 app.secret_key = key.key
-FOOD = "food"
+
 # Default Route
 
 # Update the values of the following 3 variables
@@ -139,17 +139,28 @@ def login():
     return oauth.auth0.authorize_redirect(
         redirect_uri=url_for("callback", _external=True)
     )
+
 @app.route("/callback", methods=["GET", "POST"])
 def callback():
     token = oauth.auth0.authorize_access_token()
     session["user"] = token
+    user = datastore.entity.Entity(key=client.key(constants.USER))
+    user.update({"user":token["sub"]})
+    client.put(user)
     return redirect("/")
-
-
 
 @app.route('/')
 def index():
     return render_template("home.html", session=session.get('user'), pretty=json.dumps(session.get('user'), indent=4))
+
+# Get all users in data store
+@app.route('/users', methods=['GET'])
+def get_users():
+    query = client.query(kind=constants.USER)
+    results = list(query.fetch())
+    for e in results:
+        e["id"] = e.key.id
+    return (json.dumps(results), 200)
 
 # Get or create food
 @app.route('/food', methods=['GET','POST'])
@@ -161,9 +172,26 @@ def food():
                             "description":
                                 "No RSA key in JWKS"}, 401)
         content = request.get_json()
-        new_food= datastore.entity.Entity(key=client.key(FOOD))
+        new_food= datastore.entity.Entity(key=client.key(constants.FOOD))
         new_food.update({"name": content["name"], "price": content["price"],
             "ingredients ": content["ingredients"]})
         client.put(new_food)
         new_food["id"] = new_food.key.id
-    return (json.dumps(new_food),201)
+    elif request.method == 'GET':
+        query = client.query(kind=constants.FOOD)
+        q_limit = int(request.args.get('limit', '2'))
+        q_offset = int(request.args.get('offset', '0'))
+        l_iterator = query.fetch(limit= q_limit, offset=q_offset)
+        pages = l_iterator.pages
+        results = list(next(pages))
+        if l_iterator.next_page_token:
+            next_offset = q_offset + q_limit
+            next_url = request.base_url + "?limit=" + str(q_limit) + "&offset=" + str(next_offset)
+        else:
+            next_url = None
+        for e in results:
+            e["id"] = e.key.id
+        output = {"food": results}
+        if next_url:
+            output["next"] = next_url
+        return json.dumps(output)
