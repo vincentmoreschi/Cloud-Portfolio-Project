@@ -177,9 +177,11 @@ def food():
             "ingredients ": content["ingredients"]})
         client.put(new_food)
         new_food["id"] = new_food.key.id
+        new_food["self"] = request.url
+        return (json.dumps(new_food),201)
     elif request.method == 'GET':
         query = client.query(kind=constants.FOOD)
-        q_limit = int(request.args.get('limit', '2'))
+        q_limit = int(request.args.get('limit', '5'))
         q_offset = int(request.args.get('offset', '0'))
         l_iterator = query.fetch(limit= q_limit, offset=q_offset)
         pages = l_iterator.pages
@@ -192,6 +194,41 @@ def food():
         for e in results:
             e["id"] = e.key.id
         output = {"food": results}
+        if next_url:
+            output["next"] = next_url
+        return json.dumps(output)
+    
+@app.route('/restaurant', methods=['GET','POST'])
+def restaurants():
+    if request.method == 'POST':
+        payload = verify_jwt(request)
+        if payload is None:
+            raise AuthError({"code": "no_rsa_key",
+                            "description":
+                                "No RSA key in JWKS"}, 401)
+        content = request.get_json()
+        new_restaurant= datastore.entity.Entity(key=client.key(constants.RESTAURANT))
+        new_restaurant.update({"name": content["name"], "address": content["address"],"menu":[],
+            "owner ": payload["sub"]})
+        client.put(new_restaurant)
+        new_restaurant["id"] = new_restaurant.key.id
+        new_restaurant["self"] = request.url
+        return (json.dumps(new_restaurant),201)
+    elif request.method == 'GET':
+        query = client.query(kind=constants.RESTAURANT)
+        q_limit = int(request.args.get('limit', '5'))
+        q_offset = int(request.args.get('offset', '0'))
+        l_iterator = query.fetch(limit= q_limit, offset=q_offset)
+        pages = l_iterator.pages
+        results = list(next(pages))
+        if l_iterator.next_page_token:
+            next_offset = q_offset + q_limit
+            next_url = request.base_url + "?limit=" + str(q_limit) + "&offset=" + str(next_offset)
+        else:
+            next_url = None
+        for e in results:
+            e["id"] = e.key.id
+        output = {"restaurants": results}
         if next_url:
             output["next"] = next_url
         return json.dumps(output)
