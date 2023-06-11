@@ -29,7 +29,8 @@ import constants
 app = Flask(__name__)
 client = datastore.Client()
 app.secret_key = key.key
-
+food_keys = ['name', 'price','ingredients']
+restaurant_keys = ['name', 'address']
 # Default Route
 
 # Update the values of the following 3 variables
@@ -130,6 +131,7 @@ def verify_jwt(request):
     else:
         return None
 
+
 # Generate a JWT from the Auth0 domain and return it
 # Request: JSON body with 2 properties with "username" and "password"
 #       of a user registered with this Auth0 domain
@@ -145,7 +147,7 @@ def callback():
     token = oauth.auth0.authorize_access_token()
     session["user"] = token
     user = datastore.entity.Entity(key=client.key(constants.USER))
-    user.update({"user":token["sub"]})
+    user.update({"user":token["id"]})
     client.put(user)
     return redirect("/")
 
@@ -174,11 +176,14 @@ def food():
         content = request.get_json()
         new_food= datastore.entity.Entity(key=client.key(constants.FOOD))
         new_food.update({"name": content["name"], "price": content["price"],
-            "ingredients ": content["ingredients"]})
+            "ingredients ": content["ingredients"], "self_link": request.url})
         client.put(new_food)
-        new_food["id"] = new_food.key.id
-        new_food["self"] = request.url
-        return (json.dumps(new_food),201)
+        food_key = client.key(constants.FOOD,new_food.key.id)
+        food = client.get(key=food_key)
+        food.update({"self_link":request.url + "/" +str(new_food.key.id)})
+        client.put(food)
+        food["id"] = food.key.id
+        return (json.dumps(food),201)
     elif request.method == 'GET':
         query = client.query(kind=constants.FOOD)
         q_limit = int(request.args.get('limit', '5'))
@@ -197,7 +202,73 @@ def food():
         if next_url:
             output["next"] = next_url
         return json.dumps(output)
+    return('Method not allowed',405)
+@app.route('/food/<id>', methods=['GET','DELETE','PATCH','PUT'])
+def get_food(id):
+    if request.method == 'DELETE':
+        payload = verify_jwt(request)
+        if payload is None:
+            raise AuthError({"code": "no_rsa_key",
+                            "description":
+                                "No RSA key in JWKS"}, 401)
+        query = client.query(kind=constants.FOOD)
+        results = list(query.fetch())
+        for e in results:
+            if int(id) == int(e.id):
+                food_key = client.key(constants.FOOD, int(id))
+
+        if(results is not None):   
+            client.delete(food_key)
+            return ('',204)
+   
+        else:
+            return ('No food found ',403)
+        
+    if request.method == 'GET':
+        query = client.query(kind=constants.FOOD)
+        results = list(query.fetch())
+        food_key = None
+        if id is not None:
+            for e in results:
+                if int(id) == int(e.id):
+                    food_key = client.key(constants.FOOD, int(id))
+
+            if(results is not None): 
+                
+                return (json.dumps(client.get(key=food_key)),200)
+            else:
+                return ([],200)
+        else:
+            return ('Please enter a valid ID', 406)
     
+    if request.method == 'PATCH' or request.method == 'PUT':
+        payload = verify_jwt(request)
+        if payload is None:
+            raise AuthError({"code": "no_rsa_key",
+                            "description":
+                                "No RSA key in JWKS"}, 401)
+        content = request.get_json()
+        keys_present = [key for key in food_keys if key in content]
+        if keys_present != food_keys:
+            return ({"Error": "The request object is missing at least one of the required attributes"},400)
+        query = client.query(kind=constants.FOOD)
+        results = list(query.fetch())
+        food_key = None
+        for e in results:
+            if int(id) == int(e.id):
+                food_key = client.key(constants.FOOD, int(id))
+        
+        if(food_key is not None): 
+            food = client.get(key=food_key)
+            food.update({"name": content["name"], "price": content["price"],
+          "ingredients": content["ingredients"]})
+            food["id"] = food.key.id
+            return (json.dumps(food),200)
+        else:
+            return ({"Error": "No boat with this boat_id exists"},404)
+
+    return('Method not allowed',405)
+
 @app.route('/restaurant', methods=['GET','POST'])
 def restaurants():
     if request.method == 'POST':
@@ -209,16 +280,23 @@ def restaurants():
         content = request.get_json()
         new_restaurant= datastore.entity.Entity(key=client.key(constants.RESTAURANT))
         new_restaurant.update({"name": content["name"], "address": content["address"],"menu":[],
-            "owner ": payload["sub"]})
+            "owner": payload["sub"], "self_link": request.url + "/"})
+        
         client.put(new_restaurant)
-        new_restaurant["id"] = new_restaurant.key.id
-        new_restaurant["self"] = request.url
-        return (json.dumps(new_restaurant),201)
+        restaurant_key = client.key(constants.RESTAURANT,new_restaurant.key.id)
+        restaurant = client.get(key=restaurant_key)
+        restaurant.update({"self_link":request.url + "/" +str(new_restaurant.key.id)})
+        client.put(restaurant)
+        restaurant["id"] = restaurant.key.id
+        return (json.dumps(restaurant),201)
     elif request.method == 'GET':
+        payload = verify_jwt(request)
         query = client.query(kind=constants.RESTAURANT)
+        # implement pagination
         q_limit = int(request.args.get('limit', '5'))
         q_offset = int(request.args.get('offset', '0'))
         l_iterator = query.fetch(limit= q_limit, offset=q_offset)
+        query.add_filter("owner", "=", payload["sub"])
         pages = l_iterator.pages
         results = list(next(pages))
         if l_iterator.next_page_token:
@@ -232,3 +310,106 @@ def restaurants():
         if next_url:
             output["next"] = next_url
         return json.dumps(output)
+    return('Method not allowed',405)
+
+@app.route('/restaurant/<id>', methods=['GET','DELETE','PATCH','PUT'])
+def get_restaurants(id):
+    if request.method == 'DELETE':
+        results = None
+        payload = verify_jwt(request)
+        if payload is None:
+            raise AuthError({"code": "no_rsa_key",
+                            "description":
+                                "No RSA key in JWKS"}, 401)
+        query = client.query(kind=constants.RESTAURANT)
+        results = list(query.fetch())
+        for e in results:
+            if int(id) == int(e.id):
+                restaurant_key = client.key(constants.RESTAURANT, int(id))
+                result = e["owner"]
+        if(results is not None):
+            if result == payload["sub"]:
+                    client.delete(restaurant_key)
+                    return ('',204)
+            else:
+                return ('Not owner',403)
+        else:
+            return ('No boat found ',403)
+    if request.method == 'GET':
+        payload = verify_jwt(request)
+        if payload is None:
+            raise AuthError({"code": "no_rsa_key",
+                            "description":
+                                "No RSA key in JWKS"}, 401)
+        query = client.query(kind=constants.RESTAURANT)
+        results = None
+        results = list(query.fetch())
+        for e in results:
+            if int(id) == int(e.id):
+                restaurant_key = client.key(constants.RESTAURANT, int(id))
+        
+        if(results is not None): 
+            return (json.dumps(client.get(key=restaurant_key)),200)
+        else:
+            return ([],200)
+        
+    if request.method == 'PATCH' or request.method == 'PUT' :
+        payload = verify_jwt(request)
+        content = request.get_json()
+        keys_present = [key for key in restaurant_keys if key in content]
+        if keys_present != restaurant_keys:
+            return ({"Error": "The request object is missing at least one of the required attributes"},400)
+        query = client.query(kind=constants.RESTAURANT)
+        results = list(query.fetch())
+        restaurant_key = None
+        restaurant_owner = None
+        for e in results:
+            if int(id) == int(e.id):
+                restaurant_key = client.key(constants.RESTAURANT, int(id))
+                restaurant_owner = e["id"]
+        if restaurant_owner == payload["sub"]:
+            if(restaurant_key is not None): 
+                restaurant = client.get(key=restaurant_key)
+                restaurant.update({"name": content["name"], "address": content["address"]})
+                restaurant["id"] = restaurant.key.id
+                return (json.dumps(restaurant),200)
+            else:
+                return ({"Error": "No request with this request_id exists"},404)
+        else:
+            return ('You are not the owner', 403)
+    return('Method not allowed',405)
+
+@app.route('/restaurant/<restaurant_id>/<food_id>', methods=['POST'])
+def add_menu_item(food_id,restaurant_id):
+    if request.method == 'POST':
+        payload = verify_jwt(request)
+        if payload is None:
+            raise AuthError({"code": "no_rsa_key",
+                            "description":
+                                "No RSA key in JWKS"}, 401)
+        query = client.query(kind=constants.RESTAURANT)
+        results = list(query.fetch())
+        restaurant_key = None
+        for e in results:
+            if int(restaurant_id) == int(e.id):
+                restaurant_key = client.key(constants.RESTAURANT, int(restaurant_id))
+                restaurant_owner = e["owner"]
+        query = client.query(kind=constants.FOOD)
+        results = list(query.fetch())
+        food_key = None
+        for e in results:
+            if int(food_id) == int(e.id):
+                food_key = client.key(constants.FOOD, int(food_id))
+        if restaurant_owner == payload["sub"]:
+            if(restaurant_key is not None and food_key is not None): 
+                food = client.get(key=food_key)
+                restaurant = client.get(key=restaurant_key)
+                restaurant.update({"menu": food.key.id})
+                food.update({"restaurants": restaurant.key.id})
+                return (json.dumps(restaurant),200)
+            else:
+                return ('restaurant or food not found', 404)
+        else:
+            return('You are not the restaurant owner', 403)
+    return('Method not allowed',405)
+        
