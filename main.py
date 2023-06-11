@@ -169,6 +169,9 @@ def get_users():
 def food():
     if request.method == 'POST':
         payload = verify_jwt(request)
+        # keys_present = [key for key in food_keys if key in content]
+        # if keys_present != food_keys:
+        #     return ({"Error": "The request object is missing at least one of the required attributes"},400)
         if payload is None:
             raise AuthError({"code": "no_rsa_key",
                             "description":
@@ -293,6 +296,25 @@ def restaurants():
         payload = verify_jwt(request)
         query = client.query(kind=constants.RESTAURANT)
         # implement pagination
+        #if no jwt is provided give all res
+        if payload is None:
+            q_limit = int(request.args.get('limit', '5'))
+            q_offset = int(request.args.get('offset', '0'))
+            l_iterator = query.fetch(limit= q_limit, offset=q_offset)
+            pages = l_iterator.pages
+            results = list(next(pages))
+            if l_iterator.next_page_token:
+                next_offset = q_offset + q_limit
+                next_url = request.base_url + "?limit=" + str(q_limit) + "&offset=" + str(next_offset)
+            else:
+                next_url = None
+            for e in results:
+                e["id"] = e.key.id
+            output = {"restaurants": results}
+            if next_url:
+                output["next"] = next_url
+            return json.dumps(output)
+        #get only restaurants from that owner
         q_limit = int(request.args.get('limit', '5'))
         q_offset = int(request.args.get('offset', '0'))
         l_iterator = query.fetch(limit= q_limit, offset=q_offset)
@@ -366,7 +388,7 @@ def get_restaurants(id):
         for e in results:
             if int(id) == int(e.id):
                 restaurant_key = client.key(constants.RESTAURANT, int(id))
-                restaurant_owner = e["id"]
+                restaurant_owner = e["owner"]
         if restaurant_owner == payload["sub"]:
             if(restaurant_key is not None): 
                 restaurant = client.get(key=restaurant_key)
@@ -379,9 +401,45 @@ def get_restaurants(id):
             return ('You are not the owner', 403)
     return('Method not allowed',405)
 
-@app.route('/restaurant/<restaurant_id>/<food_id>', methods=['POST'])
+@app.route('/restaurant/<restaurant_id>/<food_id>', methods=['POST','DELETE'])
 def add_menu_item(food_id,restaurant_id):
     if request.method == 'POST':
+        restaurant_owner = None
+        restaurant_key = None
+        food_key = None
+        payload = verify_jwt(request)
+        if payload is None:
+            raise AuthError({"code": "no_rsa_key",
+                            "description":
+                                "No RSA key in JWKS"}, 401)
+        query = client.query(kind=constants.RESTAURANT)
+        results = list(query.fetch())
+        
+        for e in results:
+            if int(restaurant_id) == int(e.id):
+                restaurant_key = client.key(constants.RESTAURANT, int(restaurant_id))
+                restaurant_owner = e["owner"]
+        query = client.query(kind=constants.FOOD)
+        results = list(query.fetch())
+        
+        for e in results:
+            if int(food_id) == int(e.id):
+                food_key = client.key(constants.FOOD, int(food_id))
+
+        if restaurant_owner == payload["sub"]:
+            if(restaurant_key is not None and food_key is not None): 
+                food = client.get(key=food_key)
+                restaurant = client.get(key=restaurant_key)
+                restaurant.update({"menu": [food["name"]]})
+                food.update({"restaurants":[restaurant["name"]]})
+                client.put(food)
+                client.put(restaurant)
+                return (json.dumps(restaurant),200)
+            else:
+                return ('restaurant or food not found', 404)
+        else:
+            return('You are not the restaurant owner', 403)
+    if request.method == 'DELETE':
         payload = verify_jwt(request)
         if payload is None:
             raise AuthError({"code": "no_rsa_key",
@@ -390,6 +448,7 @@ def add_menu_item(food_id,restaurant_id):
         query = client.query(kind=constants.RESTAURANT)
         results = list(query.fetch())
         restaurant_key = None
+        restaurant_owner = None
         for e in results:
             if int(restaurant_id) == int(e.id):
                 restaurant_key = client.key(constants.RESTAURANT, int(restaurant_id))
@@ -404,8 +463,10 @@ def add_menu_item(food_id,restaurant_id):
             if(restaurant_key is not None and food_key is not None): 
                 food = client.get(key=food_key)
                 restaurant = client.get(key=restaurant_key)
-                restaurant.update({"menu": food.key.id})
-                food.update({"restaurants": restaurant.key.id})
+                restaurant.update({"menu": restaurant["menu"].remove(food["name"])})
+                food.update({"restaurants": food["restaurants"].remove(restaurant["name"])})
+                client.put(food)
+                client.put(restaurant)
                 return (json.dumps(restaurant),200)
             else:
                 return ('restaurant or food not found', 404)
